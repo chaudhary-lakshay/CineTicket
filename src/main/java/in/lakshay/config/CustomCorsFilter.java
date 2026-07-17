@@ -48,25 +48,20 @@ public class CustomCorsFilter implements Filter {
         HttpServletResponse response = (HttpServletResponse) res;
         HttpServletRequest request = (HttpServletRequest) req;
 
-        // just use first origin if multiple are configured
-        String origin = allowedOrigins.split(",")[0].trim();
-
-        // special handling for docker/render deployment
-        // this is tricky - we need to reflect the actual origin in containerized envs
-        if ("*".equals(origin) || origin.contains("://frontend")) {
-            // get the actual origin from the request header
-            String requestOrigin = request.getHeader("Origin");
-            if (requestOrigin != null) {
-                // echo back the actual origin that made the request
-                response.setHeader("Access-Control-Allow-Origin", requestOrigin);
-            } else {
-                // fallback to configured origin
-                response.setHeader("Access-Control-Allow-Origin", origin);
+        // echo the request origin only when it is on the configured allowlist;
+        // otherwise fall back to the first configured origin
+        String[] origins = allowedOrigins.split(",");
+        String allowOrigin = origins[0].trim();
+        String requestOrigin = request.getHeader("Origin");
+        if (requestOrigin != null) {
+            for (String o : origins) {
+                if (o.trim().equals(requestOrigin)) {
+                    allowOrigin = requestOrigin;
+                    break;
+                }
             }
-        } else {
-            // use configured origin for local dev
-            response.setHeader("Access-Control-Allow-Origin", origin);
         }
+        response.setHeader("Access-Control-Allow-Origin", allowOrigin);
 
         // add all the CORS headers
         // add spaces after commas for readability
