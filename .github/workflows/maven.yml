@@ -54,7 +54,7 @@ jobs:
           path: target/surefire-reports/
 
       - name: Upload coverage reports to Codecov
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           file: target/site/jacoco/jacoco.xml
