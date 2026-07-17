@@ -65,9 +65,6 @@ public class SecurityConfig {
 	@Autowired
 	private JwtAuthenticationFilter jwtAuthenticationFilter; // handles JWT auth
 
-	@Autowired(required = false) // only in dev mode
-	private DevAuthenticationProvider devAuthenticationProvider; // dev backdoor
-
 	// creates the main auth provider that checks username/password
 	@Bean
 	public AuthenticationProvider authProvider() {
@@ -98,12 +95,6 @@ public class SecurityConfig {
 		// get the default manager from spring
 		AuthenticationManager manager = authConfig.getAuthenticationManager();
 
-		// check if we're in dev mode with the backdoor auth provider
-		if (devAuthenticationProvider != null) {
-			// this is a security risk - only for dev!
-			log.warn("DEV MODE: Using backdoor auth provider - NEVER USE IN PROD!!");
-		}
-
 		return manager; // return the configured manager
 	}
 
@@ -131,6 +122,7 @@ public class SecurityConfig {
 				.requestMatchers("/api/v1/seats/showtimes/**").permitAll() // seat availability
 				.requestMatchers("/api/v1/payments/webhook").permitAll() // stripe callbacks
 				.requestMatchers("/api/v1/health").permitAll() // for monitoring
+				.requestMatchers("/actuator/health/**").permitAll() // render health checks
 				.requestMatchers("/api/v1/diagnostics/**").authenticated() // debug stuff - need auth
 				.anyRequest().authenticated() // everything else needs login
 			)
