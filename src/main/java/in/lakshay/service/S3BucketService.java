@@ -1,28 +1,26 @@
 package in.lakshay.service;
 
-import com.amazonaws.HttpMethod;
-import com.amazonaws.auth.AWSCredentials;
-import com.amazonaws.auth.AWSStaticCredentialsProvider;
-import com.amazonaws.auth.BasicAWSCredentials;
-import com.amazonaws.regions.Regions;
-import com.amazonaws.services.s3.AmazonS3;
-import com.amazonaws.services.s3.AmazonS3ClientBuilder;
-import com.amazonaws.services.s3.model.CannedAccessControlList;
-import com.amazonaws.services.s3.model.DeleteObjectRequest;
-import com.amazonaws.services.s3.model.ListObjectsV2Request;
-import com.amazonaws.services.s3.model.ListObjectsV2Result;
-import com.amazonaws.services.s3.model.ObjectMetadata;
-import com.amazonaws.services.s3.model.PutObjectRequest;
-import com.amazonaws.services.s3.model.S3ObjectSummary;
-import com.amazonaws.http.HttpMethodName;
-import com.amazonaws.services.s3.model.GeneratePresignedUrlRequest;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
+import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
+import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
+import software.amazon.awssdk.core.sync.RequestBody;
+import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
+import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
+import software.amazon.awssdk.services.s3.model.ListObjectsV2Response;
+import software.amazon.awssdk.services.s3.model.ObjectCannedACL;
+import software.amazon.awssdk.services.s3.model.GetObjectRequest;
+import software.amazon.awssdk.services.s3.model.PutObjectRequest;
+import software.amazon.awssdk.services.s3.model.S3Object;
+import software.amazon.awssdk.services.s3.presigner.S3Presigner;
+import software.amazon.awssdk.services.s3.presigner.model.GetObjectPresignRequest;
 
 import java.io.IOException;
-import java.net.URL;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
@@ -36,7 +34,8 @@ import java.util.UUID;
 @Slf4j
 public class S3BucketService {
 
-    private final AmazonS3 s3Client;
+    private final S3Client s3Client;
+    private final S3Presigner presigner;
     private final String bucketName;
 
     // constructor - sets up the S3 client
@@ -53,12 +52,17 @@ public class S3BucketService {
             throw new IllegalArgumentException("AWS credentials and bucket name must be set in environment variables");
         }
 
-        AWSCredentials credentials = new BasicAWSCredentials(accessKey, secretKey);
+        StaticCredentialsProvider credentials =
+                StaticCredentialsProvider.create(AwsBasicCredentials.create(accessKey, secretKey));
 
-        this.s3Client = AmazonS3ClientBuilder
-                .standard()
-                .withCredentials(new AWSStaticCredentialsProvider(credentials))
-                .withRegion(Regions.fromName(region))
+        this.s3Client = S3Client.builder()
+                .credentialsProvider(credentials)
+                .region(Region.of(region))
+                .build();
+
+        this.presigner = S3Presigner.builder()
+                .credentialsProvider(credentials)
+                .region(Region.of(region))
                 .build();
 
         this.bucketName = bucketName;
@@ -81,18 +85,14 @@ public class S3BucketService {
         // Create a unique file name
         String fileName = "movie_posters/" + fileId + fileExtension;
 
-        // Set metadata
-        ObjectMetadata metadata = new ObjectMetadata();
-        metadata.setContentLength(file.getSize());
-        metadata.setContentType(file.getContentType());
-
         // Upload to S3 - the actual upload happens here
-        s3Client.putObject(new PutObjectRequest(
-                bucketName,
-                fileName,
-                file.getInputStream(),
-                metadata)
-                .withCannedAcl(CannedAccessControlList.PublicRead)); // make it public so we can access it
+        PutObjectRequest putRequest = PutObjectRequest.builder()
+                .bucket(bucketName)
+                .key(fileName)
+                .contentType(file.getContentType())
+                .acl(ObjectCannedACL.PUBLIC_READ) // make it public so we can access it
+                .build();
+        s3Client.putObject(putRequest, RequestBody.fromInputStream(file.getInputStream(), file.getSize()));
 
         // Generate the URL for the uploaded file
         String fileUrl = "https://" + bucketName + ".s3.amazonaws.com/" + fileName;
@@ -117,20 +117,20 @@ public class S3BucketService {
             fileName = "movie_posters/" + fileName;
         }
 
-        // Set expiration time
-        Date expirationDate = new Date();
-        expirationDate.setTime(expirationDate.getTime() + expiration * 1000L);
+        GetObjectRequest getRequest = GetObjectRequest.builder()
+                .bucket(bucketName)
+                .key(fileName)
+                .build();
 
-        // Generate pre-signed URL
-        GeneratePresignedUrlRequest generatePresignedUrlRequest = new GeneratePresignedUrlRequest(bucketName, fileName)
-                //.withMethod(HttpMethodName.GET) // old way
-                .withMethod((HttpMethod.GET)) // new way
-                .withExpiration(expirationDate); // when url expires
+        GetObjectPresignRequest presignRequest = GetObjectPresignRequest.builder()
+                .signatureDuration(Duration.ofSeconds(expiration)) // when url expires
+                .getObjectRequest(getRequest)
+                .build();
 
-        URL url = s3Client.generatePresignedUrl(generatePresignedUrlRequest);
+        String url = presigner.presignGetObject(presignRequest).url().toString();
 
         log.info("Generated pre-signed URL for {}", fileName);
-        return url.toString();
+        return url;
     }
 
     // removes a poster from S3
@@ -142,7 +142,10 @@ public class S3BucketService {
         }
 
         // Delete the file from S3
-        s3Client.deleteObject(new DeleteObjectRequest(bucketName, fileName));
+        s3Client.deleteObject(DeleteObjectRequest.builder()
+                .bucket(bucketName)
+                .key(fileName)
+                .build());
 
         log.info("Successfully deleted poster: {}", fileName);
 
@@ -162,24 +165,23 @@ public class S3BucketService {
 
         // List objects in the bucket with the given prefix
         // this is how we filter to just get movie posters
-        ListObjectsV2Request listObjectsRequest = new ListObjectsV2Request()
-                .withBucketName(bucketName)
-                .withPrefix(prefix); // only get files with this prefix
-
-        ListObjectsV2Result result = s3Client.listObjectsV2(listObjectsRequest);
+        ListObjectsV2Response response = s3Client.listObjectsV2(ListObjectsV2Request.builder()
+                .bucket(bucketName)
+                .prefix(prefix) // only get files with this prefix
+                .build());
 
         // Extract relevant information from results
         List<Map<String, Object>> posters = new ArrayList<>(); // will hold our response
-        for (S3ObjectSummary obj : result.getObjectSummaries()) {
+        for (S3Object obj : response.contents()) {
             // Generate URL for each poster - standard S3 URL format
-            String fileName = obj.getKey();
+            String fileName = obj.key();
             String url = "https://" + bucketName + ".s3.amazonaws.com/" + fileName; // public URL
 
             Map<String, Object> poster = new HashMap<>();
             poster.put("fileName", fileName);
             poster.put("fileUrl", url);
-            poster.put("size", obj.getSize());
-            poster.put("lastModified", obj.getLastModified());
+            poster.put("size", obj.size());
+            poster.put("lastModified", Date.from(obj.lastModified())); // keep v1 response shape
 
             posters.add(poster);
         }
