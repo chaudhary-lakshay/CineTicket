@@ -18,11 +18,16 @@ import jakarta.mail.MessagingException;
 import lombok.extern.slf4j.Slf4j;
 import org.json.JSONObject;
 import org.modelmapper.ModelMapper;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDateTime;
 import java.util.Optional; // for nullable results
 
@@ -65,6 +70,9 @@ public class PaymentService {
         Reservation reservation = reservationRepository.findById(reservationId)
                 .orElseThrow(() -> new ResourceNotFoundException("Reservation not found with id: " + reservationId));
 
+        // only the reservation owner (or an admin) may pay for it
+        verifyReservationAccess(reservation);
+
         // Make sure they haven't already paid
         Optional<Payment> existingPayment = paymentRepository.findByReservation(reservation);
         if (existingPayment.isPresent() && existingPayment.get().getStatus() == Payment.PaymentStatus.SUCCEEDED) {
@@ -86,7 +94,10 @@ public class PaymentService {
                 .addLineItem(SessionCreateParams.LineItem.builder()
                         .setPriceData(SessionCreateParams.LineItem.PriceData.builder()
                                 .setCurrency("usd") // TODO: support more currencies someday
-                                .setUnitAmount((long) (reservation.getTotalPrice() * 100)) // stripe wants cents
+                                .setUnitAmount(BigDecimal.valueOf(reservation.getTotalPrice())
+                                        .movePointRight(2)
+                                        .setScale(0, RoundingMode.HALF_UP)
+                                        .longValueExact()) // stripe wants cents; avoid float truncation
                                 .setProductData(SessionCreateParams.LineItem.PriceData.ProductData.builder()
                                         .setName("Movie Reservation")
                                         .setDescription(description) // movie title + res id
@@ -139,129 +150,144 @@ public class PaymentService {
     }
 
     /**
-     * Handles checkout.session.completed event
+     * Handles checkout.session.completed event.
+     * Exceptions propagate so the webhook returns non-2xx and Stripe retries.
      */
     private void handleCheckoutSessionCompleted(String payload) {
-        try {
-            JSONObject jsonObject = new JSONObject(payload);
-            JSONObject data = jsonObject.getJSONObject("data");
-            JSONObject object = data.getJSONObject("object");
+        JSONObject jsonObject = new JSONObject(payload);
+        JSONObject data = jsonObject.getJSONObject("data");
+        JSONObject object = data.getJSONObject("object");
 
-            String sessionId = object.getString("id");
-            String clientReferenceId = object.optString("client_reference_id", null);
+        String sessionId = object.getString("id");
+        String clientReferenceId = object.optString("client_reference_id", null);
 
-            log.info("Processing checkout.session.completed for session: {}, client reference: {}",
-                    sessionId, clientReferenceId);
+        log.info("Processing checkout.session.completed for session: {}, client reference: {}",
+                sessionId, clientReferenceId);
 
-            // Find payment by session ID
-            Payment payment = paymentRepository.findByPaymentIntentId(sessionId).orElse(null);
+        // Find payment by session ID
+        Payment payment = paymentRepository.findByPaymentIntentId(sessionId).orElse(null);
 
-            // If payment not found but we have client reference ID, try to find by reservation ID
-            if (payment == null && clientReferenceId != null && !clientReferenceId.isEmpty()) {
-                try {
-                    Long reservationId = Long.parseLong(clientReferenceId);
-                    Reservation reservation = reservationRepository.findById(reservationId).orElse(null);
+        // If payment not found but we have client reference ID, try to find by reservation ID
+        if (payment == null && clientReferenceId != null && !clientReferenceId.isEmpty()) {
+            try {
+                Long reservationId = Long.parseLong(clientReferenceId);
+                Reservation reservation = reservationRepository.findById(reservationId).orElse(null);
 
-                    if (reservation != null) {
-                        // Create new payment record
-                        payment = new Payment();
-                        payment.setReservation(reservation);
-                        payment.setPaymentIntentId(sessionId);
-                        payment.setAmount(reservation.getTotalPrice());
-                        payment.setStatus(Payment.PaymentStatus.SUCCEEDED);
-                        payment.setCreatedAt(LocalDateTime.now());
-                        payment.setUpdatedAt(LocalDateTime.now());
-
-                        paymentRepository.save(payment);
-
-                        // Update reservation status
-                        updateReservationStatus(reservation);
-                        return;
-                    }
-                } catch (NumberFormatException e) {
-                    log.error("Invalid client reference ID: {}", clientReferenceId);
-                }
-            }
-
-            // If payment found, update it
-            if (payment != null) {
-                payment.setStatus(Payment.PaymentStatus.SUCCEEDED);
-                payment.setUpdatedAt(LocalDateTime.now());
-                paymentRepository.save(payment);
-
-                // Update reservation status
-                updateReservationStatus(payment.getReservation());
-            }
-        } catch (Exception e) {
-            log.error("Error processing checkout.session.completed event: {}", e.getMessage(), e);
-        }
-    }
-
-    /**
-     * Handles payment_intent.succeeded event
-     */
-    private void handlePaymentIntentSucceeded(String payload) {
-        try {
-            JSONObject jsonObject = new JSONObject(payload);
-            JSONObject data = jsonObject.getJSONObject("data");
-            JSONObject object = data.getJSONObject("object");
-
-            String paymentIntentId = object.getString("id");
-
-            log.info("Processing payment_intent.succeeded for payment intent: {}", paymentIntentId);
-
-            // Find payments that might be associated with this payment intent
-            // This is a fallback mechanism in case the checkout.session.completed event fails
-            paymentRepository.findAll().forEach(payment -> {
-                if (payment.getStatus() == Payment.PaymentStatus.PENDING) {
+                if (reservation != null) {
+                    // Create new payment record
+                    payment = new Payment();
+                    payment.setReservation(reservation);
+                    payment.setPaymentIntentId(sessionId);
+                    payment.setAmount(reservation.getTotalPrice());
                     payment.setStatus(Payment.PaymentStatus.SUCCEEDED);
+                    payment.setCreatedAt(LocalDateTime.now());
                     payment.setUpdatedAt(LocalDateTime.now());
+
                     paymentRepository.save(payment);
 
                     // Update reservation status
-                    updateReservationStatus(payment.getReservation());
+                    updateReservationStatus(reservation);
+                    return;
                 }
-            });
-        } catch (Exception e) {
-            log.error("Error processing payment_intent.succeeded event: {}", e.getMessage(), e);
+            } catch (NumberFormatException e) {
+                log.error("Invalid client reference ID: {}", clientReferenceId);
+                return;
+            }
         }
+
+        if (payment == null) {
+            log.warn("No payment found for checkout session {}; ignoring", sessionId);
+            return;
+        }
+
+        // idempotency: Stripe delivers at-least-once, skip already-processed payments
+        if (payment.getStatus() == Payment.PaymentStatus.SUCCEEDED) {
+            log.info("Payment {} already succeeded; ignoring duplicate event", payment.getId());
+            return;
+        }
+
+        payment.setStatus(Payment.PaymentStatus.SUCCEEDED);
+        payment.setUpdatedAt(LocalDateTime.now());
+        paymentRepository.save(payment);
+
+        // Update reservation status
+        updateReservationStatus(payment.getReservation());
+    }
+
+    /**
+     * Handles payment_intent.succeeded event.
+     * Only the payment this event references is touched — never a mass update.
+     */
+    private void handlePaymentIntentSucceeded(String payload) {
+        JSONObject jsonObject = new JSONObject(payload);
+        JSONObject data = jsonObject.getJSONObject("data");
+        JSONObject object = data.getJSONObject("object");
+
+        String paymentIntentId = object.getString("id");
+
+        log.info("Processing payment_intent.succeeded for payment intent: {}", paymentIntentId);
+
+        Payment payment = paymentRepository.findByPaymentIntentId(paymentIntentId).orElse(null);
+
+        if (payment == null) {
+            // normal for the checkout flow: we store the checkout session id and
+            // checkout.session.completed is the authoritative event for it
+            log.info("No payment found for payment intent {}; ignoring", paymentIntentId);
+            return;
+        }
+
+        if (payment.getStatus() == Payment.PaymentStatus.SUCCEEDED) {
+            log.info("Payment {} already succeeded; ignoring duplicate event", payment.getId());
+            return;
+        }
+
+        payment.setStatus(Payment.PaymentStatus.SUCCEEDED);
+        payment.setUpdatedAt(LocalDateTime.now());
+        paymentRepository.save(payment);
+
+        // Update reservation status
+        updateReservationStatus(payment.getReservation());
     }
 
     /**
      * Handles charge.succeeded event
      */
     private void handleChargeSucceeded(String payload) {
-        try {
-            JSONObject jsonObject = new JSONObject(payload);
-            JSONObject data = jsonObject.getJSONObject("data");
-            JSONObject object = data.getJSONObject("object");
+        JSONObject jsonObject = new JSONObject(payload);
+        JSONObject data = jsonObject.getJSONObject("data");
+        JSONObject object = data.getJSONObject("object");
 
-            String paymentIntentId = object.optString("payment_intent", null);
+        String paymentIntentId = object.optString("payment_intent", null);
 
-            if (paymentIntentId != null && !paymentIntentId.isEmpty()) {
-                log.info("Processing charge.succeeded for payment intent: {}", paymentIntentId);
-
-                // Find payment by payment intent ID
-                Payment payment = paymentRepository.findByPaymentIntentId(paymentIntentId).orElse(null);
-
-                if (payment != null) {
-                    payment.setStatus(Payment.PaymentStatus.SUCCEEDED);
-                    payment.setUpdatedAt(LocalDateTime.now());
-
-                    // Try to get receipt URL
-                    if (object.has("receipt_url") && !object.isNull("receipt_url")) {
-                        payment.setReceiptUrl(object.getString("receipt_url"));
-                    }
-
-                    paymentRepository.save(payment);
-
-                    // Update reservation status
-                    updateReservationStatus(payment.getReservation());
-                }
-            }
-        } catch (Exception e) {
-            log.error("Error processing charge.succeeded event: {}", e.getMessage(), e);
+        if (paymentIntentId == null || paymentIntentId.isEmpty()) {
+            return;
         }
+
+        log.info("Processing charge.succeeded for payment intent: {}", paymentIntentId);
+
+        Payment payment = paymentRepository.findByPaymentIntentId(paymentIntentId).orElse(null);
+        if (payment == null) {
+            return;
+        }
+
+        // capture receipt URL even on duplicate deliveries
+        if (object.has("receipt_url") && !object.isNull("receipt_url")
+                && payment.getReceiptUrl() == null) {
+            payment.setReceiptUrl(object.getString("receipt_url"));
+            paymentRepository.save(payment);
+        }
+
+        // idempotency: don't re-run status flip / receipt email
+        if (payment.getStatus() == Payment.PaymentStatus.SUCCEEDED) {
+            return;
+        }
+
+        payment.setStatus(Payment.PaymentStatus.SUCCEEDED);
+        payment.setUpdatedAt(LocalDateTime.now());
+        paymentRepository.save(payment);
+
+        // Update reservation status
+        updateReservationStatus(payment.getReservation());
     }
 
     // updates payment status to SUCCEEDED and marks reservation as paid
@@ -304,7 +330,9 @@ public class PaymentService {
                 log.warn("No payment found for reservation ID: {}", reservationId); // shouldn't happen
             }
         } catch (Exception e) {
-            log.error("Error updating payment status: {}", e.getMessage(), e); // log full stack trace
+            log.error("Error updating payment status: {}", e.getMessage(), e);
+            // propagate so the webhook returns non-2xx and Stripe retries instead of losing the event
+            throw new IllegalStateException("Failed to mark reservation " + reservationId + " as paid", e);
         }
     }
 
@@ -317,10 +345,26 @@ public class PaymentService {
         Reservation reservation = reservationRepository.findById(reservationId)
                 .orElseThrow(() -> new ResourceNotFoundException("Reservation not found with id: " + reservationId));
 
+        // only the reservation owner (or an admin) may see its payment
+        verifyReservationAccess(reservation);
+
         Payment payment = paymentRepository.findByReservation(reservation)
                 .orElseThrow(() -> new ResourceNotFoundException("Payment not found for reservation: " + reservationId));
 
         return mapToDTO(payment);
+    }
+
+    // owner-or-admin guard - same policy as ReservationService
+    private void verifyReservationAccess(Reservation reservation) {
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        if (auth == null) {
+            throw new AccessDeniedException("Not authenticated");
+        }
+        boolean isAdmin = auth.getAuthorities().stream()
+                .anyMatch(a -> a.getAuthority().equals("ROLE_ADMIN"));
+        if (!isAdmin && !reservation.getUser().getUserName().equals(auth.getName())) {
+            throw new AccessDeniedException("Not authorized to access payments for this reservation");
+        }
     }
 
     // convert payment entity to DTO
