@@ -17,9 +17,8 @@ import org.springframework.context.MessageSource;
 import org.springframework.context.i18n.LocaleContextHolder;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.access.prepost.PreAuthorize;
-import org.springframework.security.core.Authentication;
-import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.*;
 
 @RestController
@@ -67,6 +66,9 @@ public class PaymentController {
                     messageSource.getMessage("payment.session.created", null, LocaleContextHolder.getLocale()),
                     checkoutSessionDTO
             ));
+        } catch (AccessDeniedException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(new ApiResponse<>(false, e.getMessage(), null));
         } catch (StripeException e) {
             // something went wrong with stripe
             log.error("Stripe error: {}", e.getMessage());
@@ -96,14 +98,7 @@ public class PaymentController {
         log.info("Getting payment for reservation: {}", reservationId);
 
         try {
-            // get current user info
-            Authentication auth = SecurityContextHolder.getContext().getAuthentication();
-            String username = auth.getName();
-            boolean isAdmin = auth.getAuthorities().stream()
-                    .anyMatch(a -> a.getAuthority().equals("ROLE_ADMIN"));
-
-            // Authorization check would be done in service layer
-            // only owner or admin can see payment details
+            // ownership is enforced in the service layer (owner or admin only)
 
             PaymentDTO paymentDTO = paymentService.getPaymentByReservationId(reservationId);
 
@@ -112,6 +107,9 @@ public class PaymentController {
                     messageSource.getMessage("payment.retrieved", null, LocaleContextHolder.getLocale()),
                     paymentDTO
             ));
+        } catch (AccessDeniedException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(new ApiResponse<>(false, e.getMessage(), null));
         } catch (Exception e) {
             // something went wrong
             log.error("Error retrieving payment: {}", e.getMessage());

@@ -37,9 +37,6 @@ public class MovieControllerPosterTest {
     @BeforeEach
     void setUp() {
         mockMvc = MockMvcBuilders.standaloneSetup(movieController).build();
-
-        when(messageSource.getMessage(anyString(), any(), any(Locale.class)))
-                .thenReturn("Success message");
     }
 
     // Placeholder test to avoid empty test class

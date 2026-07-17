@@ -42,7 +42,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter { // runs once
 
         // look for the auth header with the JWT
         String authHeader = request.getHeader("Authorization");
-        log.debug("Auth Header: {}", authHeader);
+        log.debug("Auth header present: {}", authHeader != null);
 
         // no auth header = anonymous request
         if (authHeader == null) {
@@ -53,12 +53,10 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter { // runs once
 
         // we only support bearer tokens
         if (!authHeader.startsWith("Bearer ")) {
-            log.debug("Not a bearer token, ignoring: {}", authHeader);
+            log.debug("Not a bearer token, ignoring");
             filterChain.doFilter(request, response);
             return;
         }
-
-        log.debug("Found JWT token: {}", authHeader);
 
         try {
             // strip off the "Bearer " prefix

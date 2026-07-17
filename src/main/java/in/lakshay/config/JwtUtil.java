@@ -59,8 +59,6 @@ public class JwtUtil {
     // gets and checks claims from a token
     // throws exceptions if token is bad/expired
     public Claims getClaimsFromToken(String token) {
-        // only log first bit of token for security reasons
-        log.debug("Extracting claims from token: {}", token.substring(0, Math.min(10, token.length())) + "...");
         try {
             // parse and verify the token
             Claims claims = Jwts.parser()
@@ -68,7 +66,6 @@ public class JwtUtil {
                     .build()
                     .parseSignedClaims(token) // parse JWT
                     .getPayload(); // get body
-            log.debug("Claims extracted successfully: {}", claims);
             return claims;
         } catch (Exception e) {
             // could be expired, bad signature, malformed, whatever
