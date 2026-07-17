@@ -35,11 +35,11 @@
 		<sonar.projectKey>lakshay1341_Movie-Review-System-API</sonar.projectKey>
 	</properties>
 	<dependencies>
-		<!-- AWS SDK for Java -->
+		<!-- AWS SDK for Java v2 (v1 reached end-of-support Dec 2025) -->
 		<dependency>
-			<groupId>com.amazonaws</groupId>
-			<artifactId>aws-java-sdk-s3</artifactId>
-			<version>1.12.641</version>
+			<groupId>software.amazon.awssdk</groupId>
+			<artifactId>s3</artifactId>
+			<version>2.46.18</version>
 		</dependency>
 
 		<!-- iText for PDF generation -->
