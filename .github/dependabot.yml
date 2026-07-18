@@ -8,6 +8,10 @@ updates:
       maven-dependencies:
         patterns:
           - "*"
+    ignore:
+      # majors (Spring Boot 4.x, stripe-java 23+) are deliberate migrations, not auto-bumps
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
