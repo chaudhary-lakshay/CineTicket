@@ -56,7 +56,7 @@ The system is deployed and fully functional at [https://cineticket.onrender.com]
 
 ### Technology Stack
 
-- **Backend**: Java 17, Spring Boot 3.2.3, Spring Data JPA
+- **Backend**: Java 17, Spring Boot 3.5.16, Spring Data JPA
 - **Database**: MySQL 8.0
 - **Security**: Spring Security, JJWT 0.12.6
 - **API Documentation**: Swagger OpenAPI 3.0
@@ -64,7 +64,9 @@ The system is deployed and fully functional at [https://cineticket.onrender.com]
 - **PDF Generation**: iText 5.5.13.3
 - **Email Service**: Spring Mail
 - **Utilities**: Lombok, Resilience4j, MessageSource
-- **Testing**: JUnit 5, Mockito
+- **Testing**: JUnit 5, Mockito, Testcontainers
+- **Storage**: AWS S3 (AWS SDK v2)
+- **Ops**: Spring Boot Actuator (`/actuator/health`), Dependabot
 
 ## 🔍 Installation
 
@@ -79,8 +81,8 @@ The system is deployed and fully functional at [https://cineticket.onrender.com]
 1. **Clone the repository**
 
 ```bash
-git clone https://github.com/lakshay1341/Movie-Review-System-API.git
-cd Movie-Review-System-API
+git clone https://github.com/chaudhary-lakshay/CineTicket.git
+cd CineTicket
 ```
 
 2. **Configure the database**
@@ -120,14 +122,12 @@ mvn spring-boot:run
 - API: [http://localhost:8080](http://localhost:8080)
 - Swagger UI: [http://localhost:8080/swagger-ui/index.html](http://localhost:8080/swagger-ui/index.html)
 
-### Default Credentials
+### Local Development Users
 
-The system automatically creates two users on startup:
-
-| Role  | Username | Password |
-|-------|----------|----------|
-| Admin | `admin`  | `password` |
-| User  | `user`   | `password` |
+Seed data (including local dev users) is controlled by the `SQL_INIT_MODE` environment
+variable — `always` by default for local development, set it to `never` in production.
+No default credentials ship in production; `JWT_SECRET` is mandatory (the app fails fast
+without it), and `CORS_ORIGINS` configures allowed origins.
 
 ## 🔥 API Reference
 
@@ -512,7 +512,7 @@ Contributions are welcome! Here's how you can contribute:
 
 **Lakshay Chaudhary**
 📧 Email: [lakshaychaudhary2003@gmail.com](mailto:lakshaychaudhary2003@gmail.com)
-💼 GitHub: [lakshay1341](https://github.com/lakshay1341)
+💼 GitHub: [chaudhary-lakshay](https://github.com/chaudhary-lakshay)
 
 ---
 
